@@ -12,6 +12,7 @@ const DashboardLayout: React.FC = () => {
   const { t } = useLanguage();
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [hasRedirected, setHasRedirected] = useState(false);
   const currentYear = new Date().getFullYear();
 
   useEffect(() => {
@@ -22,6 +23,31 @@ const DashboardLayout: React.FC = () => {
         
         if (!authData.isAuthenticated) {
           navigate('/login');
+          return;
+        }
+        
+        // Check if user is only an evaluator and redirect accordingly
+        if (authData.userOrganizations && authData.userOrganizations.length > 0 && !hasRedirected) {
+          const roles = authData.userOrganizations.map(org => org.role);
+          const isOnlyEvaluator = roles.includes('EVALUATOR') && 
+                                !roles.includes('ADMIN') && 
+                                !roles.includes('PLANNER');
+          
+          // If user is only evaluator and not already on evaluator page, redirect
+          if (isOnlyEvaluator && location.pathname !== '/evaluator') {
+            console.log('Redirecting evaluator-only user to evaluator dashboard');
+            setHasRedirected(true);
+            navigate('/evaluator', { replace: true });
+            return;
+          }
+          
+          // If user is on login page and has multiple roles, redirect to dashboard
+          if (!isOnlyEvaluator && (location.pathname === '/login' || location.pathname === '/')) {
+            console.log('Redirecting multi-role user to dashboard');
+            setHasRedirected(true);
+            navigate('/dashboard', { replace: true });
+            return;
+          }
         }
       } catch (error) {
         console.error('Auth check failed:', error);
@@ -31,7 +57,23 @@ const DashboardLayout: React.FC = () => {
     };
     
     checkAuth();
-  }, [navigate]);
+  }, [navigate, location.pathname, hasRedirected]);
+
+  // Helper function to check if user has only evaluator role
+  const isEvaluatorOnly = () => {
+    if (!authState?.userOrganizations) return false;
+    const roles = authState.userOrganizations.map(org => org.role);
+    return roles.includes('EVALUATOR') && 
+           !roles.includes('ADMIN') && 
+           !roles.includes('PLANNER');
+  };
+
+  // Helper function to check if user has multiple roles
+  const hasMultipleRoles = () => {
+    if (!authState?.userOrganizations) return false;
+    const roles = [...new Set(authState.userOrganizations.map(org => org.role))];
+    return roles.length > 1;
+  };
 
   // Show loading state while checking authentication
   if (authState === null) {
@@ -82,8 +124,8 @@ const DashboardLayout: React.FC = () => {
               </Link>
               
               <div className="ml-10 flex items-center space-x-4">
-                {/* Only show dashboard link if not on evaluator page */}
-                {!isActive('/evaluator') && (
+                {/* Only show dashboard link if user is not evaluator-only and not on evaluator page */}
+                {!isEvaluatorOnly() && !isActive('/evaluator') && (
                   <Link
                     to="/dashboard"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
@@ -97,8 +139,8 @@ const DashboardLayout: React.FC = () => {
                   </Link>
                 )}
                 
-                {/* Only show planning link to planners */}
-                {isPlanner(authState.userOrganizations) && !isActive('/evaluator') && (
+                {/* Only show planning link to planners and not on evaluator page */}
+                {isPlanner(authState.userOrganizations) && !isEvaluatorOnly() && !isActive('/evaluator') && (
                   <Link
                     to="/planning"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
@@ -123,12 +165,12 @@ const DashboardLayout: React.FC = () => {
                     }`}
                   >
                     <ClipboardCheck className="h-5 w-5 mr-2" />
-                    {t('nav.evaluator')}
+                    {isEvaluatorOnly() ? 'Dashboard' : t('nav.evaluator')}
                   </Link>
                 )}
 
                 {/* Admin Dashboard link */}
-                {isAdmin(authState.userOrganizations) && (
+                {isAdmin(authState.userOrganizations) && !isEvaluatorOnly() && (
                   <Link
                     to="/admin"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${

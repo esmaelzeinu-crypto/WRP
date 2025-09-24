@@ -19,6 +19,7 @@ const EvaluatorDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'pending' | 'reviewed'>('pending');
   const [userOrgIds, setUserOrgIds] = useState<number[]>([]);
   const [isAuthChecked, setIsAuthChecked] = useState(false);
+  const [isEvaluatorOnly, setIsEvaluatorOnly] = useState(false);
 
   // Check user permissions once on mount
   useEffect(() => {
@@ -34,7 +35,13 @@ const EvaluatorDashboard: React.FC = () => {
         if (authData.userOrganizations && authData.userOrganizations.length > 0) {
           const orgIds = authData.userOrganizations.map(org => org.organization);
           setUserOrgIds(orgIds);
-          console.log('Evaluator organization IDs:', orgIds);
+          
+          // Check if user is only an evaluator (no other roles)
+          const roles = authData.userOrganizations.map(org => org.role);
+          const isOnlyEvaluator = roles.includes('EVALUATOR') && 
+                                !roles.includes('ADMIN') && 
+                                !roles.includes('PLANNER');
+          setIsEvaluatorOnly(isOnlyEvaluator);
         }
         
         if (!isEvaluator(authData.userOrganizations)) {
@@ -52,50 +59,53 @@ const EvaluatorDashboard: React.FC = () => {
     checkPermissions();
   }, [navigate]);
 
-  // Optimized organizations mapping with React Query
-  const { data: organizationsMap } = useQuery({
-    queryKey: ['organizations-map'],
-    queryFn: async () => {
-      const response = await organizations.getAll();
-      const orgMap: Record<string, string> = {};
-      
-      if (response && Array.isArray(response)) {
-        response.forEach((org: any) => {
-          if (org && org.id) {
-            orgMap[org.id] = org.name;
-          }
-        });
-      }
-      
-      return orgMap;
-    },
-    staleTime: 300000, // Cache for 5 minutes
-    enabled: isAuthChecked && userOrgIds.length > 0
-  });
-
-  // Optimized pending plans query
+  // Optimized pending plans query - only fetch SUBMITTED status plans
   const { data: pendingPlans, isLoading: loadingPending, refetch } = useQuery({
-    queryKey: ['evaluator-pending-plans', userOrgIds],
+    queryKey: ['evaluator-pending-plans', userOrgIds, 'SUBMITTED'],
     queryFn: async () => {
       if (userOrgIds.length === 0) return { data: [] };
       
       try {
+        console.log('Fetching SUBMITTED plans for evaluator organizations:', userOrgIds);
         const response = await api.get('/plans/', {
           params: {
             status: 'SUBMITTED',
-            organization__in: userOrgIds.join(','),
-            limit: 50 // Limit results for better performance
+            limit: 100 // Increased limit but still reasonable
           }
         });
         
         const plans = response.data?.results || response.data || [];
+        console.log(`Found ${plans.length} total SUBMITTED plans`);
         
-        // Map organization names efficiently
-        const plansWithNames = plans.map((plan: any) => ({
+        // Filter plans by user's organizations on client side for better performance
+        const filteredPlans = plans.filter((plan: any) => 
+          userOrgIds.includes(plan.organization)
+        );
+        console.log(`Filtered to ${filteredPlans.length} plans for user organizations`);
+        
+        // Get organization names in parallel for better performance
+        const orgNamesMap: Record<string, string> = {};
+        const uniqueOrgIds = [...new Set(filteredPlans.map(p => p.organization))];
+        
+        await Promise.all(
+          uniqueOrgIds.map(async (orgId) => {
+            try {
+              const orgResponse = await api.get(`/organizations/${orgId}/`);
+              orgNamesMap[orgId] = orgResponse.data?.name || 'Unknown Organization';
+            } catch (err) {
+              console.warn(`Failed to fetch organization ${orgId}:`, err);
+              orgNamesMap[orgId] = 'Unknown Organization';
+            }
+          })
+        );
+        
+        // Add organization names to plans
+        const plansWithNames = filteredPlans.map((plan: any) => ({
           ...plan,
-          organizationName: organizationsMap?.[plan.organization] || 'Unknown Organization'
+          organizationName: orgNamesMap[plan.organization] || 'Unknown Organization'
         }));
         
+        console.log('Final pending plans with organization names:', plansWithNames.length);
         return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching pending reviews:', error);
@@ -103,34 +113,58 @@ const EvaluatorDashboard: React.FC = () => {
       }
     },
     enabled: isAuthChecked && userOrgIds.length > 0,
-    staleTime: 30000, // Cache for 30 seconds
+    staleTime: 10000, // Cache for 10 seconds for faster updates
     refetchOnWindowFocus: false,
+    refetchOnMount: true,
     retry: 1
   });
 
-  // Optimized reviewed plans query - only fetch when tab is active
+  // Optimized reviewed plans query - only fetch APPROVED and REJECTED plans when tab is active
   const { data: reviewedPlans, isLoading: loadingReviewed } = useQuery({
-    queryKey: ['evaluator-reviewed-plans', userOrgIds],
+    queryKey: ['evaluator-reviewed-plans', userOrgIds, 'APPROVED_REJECTED'],
     queryFn: async () => {
       if (userOrgIds.length === 0) return { data: [] };
       
       try {
+        console.log('Fetching APPROVED/REJECTED plans for evaluator organizations:', userOrgIds);
         const response = await api.get('/plans/', {
           params: {
-            status__in: 'APPROVED,REJECTED',
-            organization__in: userOrgIds.join(','),
-            limit: 50 // Limit results for better performance
+            limit: 100
           }
         });
         
         const plans = response.data?.results || response.data || [];
+        console.log(`Found ${plans.length} total plans for reviewed tab`);
         
-        // Map organization names efficiently
-        const plansWithNames = plans.map((plan: any) => ({
+        // Filter by status and organization on client side
+        const filteredPlans = plans.filter((plan: any) => 
+          (plan.status === 'APPROVED' || plan.status === 'REJECTED') &&
+          userOrgIds.includes(plan.organization)
+        );
+        console.log(`Filtered to ${filteredPlans.length} reviewed plans for user organizations`);
+        
+        // Get organization names efficiently
+        const orgNamesMap: Record<string, string> = {};
+        const uniqueOrgIds = [...new Set(filteredPlans.map(p => p.organization))];
+        
+        await Promise.all(
+          uniqueOrgIds.map(async (orgId) => {
+            try {
+              const orgResponse = await api.get(`/organizations/${orgId}/`);
+              orgNamesMap[orgId] = orgResponse.data?.name || 'Unknown Organization';
+            } catch (err) {
+              console.warn(`Failed to fetch organization ${orgId}:`, err);
+              orgNamesMap[orgId] = 'Unknown Organization';
+            }
+          })
+        );
+        
+        const plansWithNames = filteredPlans.map((plan: any) => ({
           ...plan,
-          organizationName: organizationsMap?.[plan.organization] || 'Unknown Organization'
+          organizationName: orgNamesMap[plan.organization] || 'Unknown Organization'
         }));
         
+        console.log('Final reviewed plans with organization names:', plansWithNames.length);
         return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching reviewed plans:', error);
@@ -138,8 +172,9 @@ const EvaluatorDashboard: React.FC = () => {
       }
     },
     enabled: isAuthChecked && userOrgIds.length > 0 && activeTab === 'reviewed',
-    staleTime: 60000, // Cache for 1 minute
+    staleTime: 30000, // Cache for 30 seconds
     refetchOnWindowFocus: false,
+    refetchOnMount: false, // Don't refetch on mount for reviewed plans
     retry: 1
   });
 
@@ -196,7 +231,7 @@ const EvaluatorDashboard: React.FC = () => {
       setError('Invalid plan data for viewing');
       return;
     }
-    
+    console.log('Navigating to plan view:', plan.id);
     setError(null);
     navigate(`/plans/${plan.id}`);
   };
@@ -206,7 +241,7 @@ const EvaluatorDashboard: React.FC = () => {
       setError('Invalid plan data for review');
       return;
     }
-    
+    console.log('Opening review modal for plan:', plan.id);
     setSelectedPlan(plan);
     setShowReviewModal(true);
   };
@@ -214,6 +249,7 @@ const EvaluatorDashboard: React.FC = () => {
   const handleReviewSubmit = async (data: { status: 'APPROVED' | 'REJECTED'; feedback: string }) => {
     if (!selectedPlan) return;
     
+    console.log('Submitting review for plan:', selectedPlan.id, 'Status:', data.status);
     try {
       await reviewMutation.mutateAsync({
         planId: selectedPlan.id,
@@ -239,7 +275,7 @@ const EvaluatorDashboard: React.FC = () => {
     }
   };
 
-  // Optimized date formatting
+  // Memoized date formatting for better performance
   const formatDate = (dateString: string | null | undefined) => {
     if (!dateString) return 'Not available';
     try {
@@ -249,11 +285,10 @@ const EvaluatorDashboard: React.FC = () => {
     }
   };
 
-  // Optimized organization name getter
+  // Memoized organization name getter
   const getOrganizationName = (plan: any) => {
     return plan.organizationName || 
            plan.organization_name || 
-           (organizationsMap?.[plan.organization]) || 
            'Unknown Organization';
   };
 
@@ -261,8 +296,10 @@ const EvaluatorDashboard: React.FC = () => {
   if (!isAuthChecked) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
-        <Loader className="h-6 w-6 animate-spin mr-2 text-green-600" />
+        <div className="text-center">
+          <Loader className="h-8 w-8 animate-spin mx-auto text-green-600 mb-2" />
         <span className="text-lg">Loading evaluator dashboard...</span>
+        </div>
       </div>
     );
   }
