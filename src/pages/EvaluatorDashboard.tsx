@@ -272,97 +272,6 @@ const EvaluatorDashboard: React.FC = () => {
     }
   }, [isAuthChecked, userOrgIds, organizationsMap]);
 
-  // Optimized reviewed plans query - fetch immediately with better performance
-  const { data: reviewedPlans, isLoading: loadingReviewed } = useQuery({
-    queryKey: ['evaluator-reviewed-plans', userOrgIds, currentEvaluatorIds, 'APPROVED_REJECTED'],
-    queryFn: async () => {
-      if (userOrgIds.length === 0 || currentEvaluatorIds.length === 0) return { data: [] };
-      
-      try {
-        if (isInitialLoad) {
-          console.log('Initial load: Fetching reviewed plans for evaluator organizations:', userOrgIds);
-        }
-        
-        // Fetch both APPROVED and REJECTED plans in parallel for better performance
-        const [approvedResponse, rejectedResponse] = await Promise.all([
-          api.get('/plans/', {
-            params: {
-              status: 'APPROVED',
-              organization: userOrgIds.join(','),
-              limit: 25
-            }
-          }),
-          api.get('/plans/', {
-          params: {
-            organization: userOrgIds.join(','),
-            limit: 50
-          }
-        });
-        
-        const plans = response.data?.results || response.data || [];
-        console.log(`Found ${plans.length} total plans from user organizations`);
-        
-        // Filter plans: must be APPROVED/REJECTED AND reviewed by current evaluator
-        const filteredPlans = plans.filter((plan: any) => {
-          // 1. Must be APPROVED or REJECTED status
-          if (plan.status !== 'APPROVED' && plan.status !== 'REJECTED') {
-            return false;
-          }
-          
-          // 2. Must be from user's organization
-          if (!userOrgIds.includes(plan.organization)) {
-            return false;
-          }
-          
-          // 3. Must have been reviewed by current evaluator (using OrganizationUser ID)
-          if (plan.reviews && Array.isArray(plan.reviews)) {
-            const hasReviewFromCurrentEvaluator = plan.reviews.some((review: any) => {
-              const reviewerOrgUserId = review.evaluator;
-              const isCurrentEvaluator = currentEvaluatorIds.includes(reviewerOrgUserId);
-              
-              console.log(`Plan ${plan.id} review check: reviewer=${reviewerOrgUserId}, currentEvaluators=${currentEvaluatorIds}, match=${isCurrentEvaluator}`);
-              
-              return isCurrentEvaluator;
-            });
-            
-            return hasReviewFromCurrentEvaluator;
-          } else {
-            // No reviews array means not reviewed by anyone
-            return false;
-          }
-        });
-        
-        console.log(`Filtered to ${filteredPlans.length} reviewed plans by current evaluator`);
-        if (isInitialLoad) {
-          console.log(`Filtered to ${filteredPlans.length} reviewed plans by current evaluator`);
-        }
-        
-        // Add organization names from pre-fetched map and review details
-        const plansWithNames = filteredPlans.map((plan: any) => ({
-          ...plan,
-          organizationName: organizationsMap[plan.organization] || 'Unknown Organization',
-          // Add the evaluator's review details for display
-          currentEvaluatorReview: plan.reviews?.find((review: any) => 
-            currentEvaluatorIds.includes(review.evaluator)
-          )
-        }));
-        
-        return { data: plansWithNames };
-      } catch (error) {
-        console.error('Error fetching reviewed plans:', error);
-        throw error;
-      }
-    },
-    enabled: isAuthChecked && userOrgIds.length > 0 && currentEvaluatorIds.length > 0,
-    staleTime: 30000, // Cache for 30 seconds since reviewed plans change less frequently
-    cacheTime: 60000, // Keep in cache for 60 seconds
-    refetchOnWindowFocus: false,
-    refetchOnMount: true, // Load on mount for immediate display
-    retry: 1,
-    keepPreviousData: true, // Show previous data while refreshing
-    suspense: false
-  });
-
   // Memoized statistics to avoid recalculation
   const statistics = useMemo(() => {
     // Only count plans that are properly filtered
@@ -837,29 +746,31 @@ const EvaluatorDashboard: React.FC = () => {
                               (plan.currentEvaluatorReview?.feedback || plan.reviews[plan.reviews.length - 1].feedback) : 
                               'System review'}
                           </div>
-          })
-        ]);
+                        </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-        const approvedPlans = approvedResponse.data?.results || approvedResponse.data || [];
-        const rejectedPlans = rejectedResponse.data?.results || rejectedResponse.data || [];
-        const allPlans = [...approvedPlans, ...rejectedPlans];
-        
-        if (isInitialLoad) {
-          console.log(`Found ${allPlans.length} total approved/rejected plans from user organizations`);
-        }
+                          <button
+                            onClick={() => handleViewPlan(plan)}
                             className="text-blue-600 hover:text-blue-900 flex items-center"
                           >
-        const filteredPlans = allPlans.filter((plan: any) => {
+                            <Eye className="h-4 w-4 mr-1" />
                             View
                           </button>
                         </td>
                       </tr>
-          
-          // 2. Must have been reviewed by current evaluator (using OrganizationUser ID)
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Review Modal */}
       {showReviewModal && selectedPlan && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+          <div className="relative top-20 mx-auto p-5 border w-11/12 md:w-3/4 lg:w-1/2 shadow-lg rounded-md bg-white">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">
               Review Plan: {getOrganizationName(selectedPlan)}
             </h3>
             
