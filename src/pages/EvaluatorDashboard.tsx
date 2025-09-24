@@ -110,7 +110,6 @@ const EvaluatorDashboard: React.FC = () => {
           
           return true;
         });
-        );
         console.log(`Filtered to ${filteredPlans.length} truly pending plans (unreviewed by current evaluator)`);
         
         // Get organization names in parallel for better performance
@@ -209,7 +208,6 @@ const EvaluatorDashboard: React.FC = () => {
           
           return true;
         });
-        );
         console.log(`Filtered to ${filteredPlans.length} plans actually reviewed by current evaluator`);
         
         // Get organization names efficiently
@@ -367,7 +365,7 @@ const EvaluatorDashboard: React.FC = () => {
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
           <Loader className="h-8 w-8 animate-spin mx-auto text-green-600 mb-2" />
-        <span className="text-lg">Loading evaluator dashboard...</span>
+          <span className="text-lg">Loading evaluator dashboard...</span>
         </div>
       </div>
     );
