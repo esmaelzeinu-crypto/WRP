@@ -33,15 +33,15 @@ const DashboardLayout: React.FC = () => {
                                 !roles.includes('ADMIN') && 
                                 !roles.includes('PLANNER');
           
-          // If user is only evaluator and not already on evaluator page, redirect immediately
-          if (isOnlyEvaluator && location.pathname !== '/evaluator' && location.pathname !== '/profile') {
+          // If user is only evaluator and not already on evaluator/profile page, redirect immediately
+          if (isOnlyEvaluator && !location.pathname.startsWith('/evaluator') && location.pathname !== '/profile') {
             console.log('Redirecting evaluator-only user to evaluator dashboard');
             setHasRedirected(true);
             navigate('/evaluator', { replace: true });
             return;
           }
           
-          // If user has multiple roles and is on login/home page, redirect to dashboard
+          // If user has multiple roles and is on login/home/dashboard page, go to dashboard
           if (!isOnlyEvaluator && (location.pathname === '/login' || location.pathname === '/' || location.pathname === '/dashboard')) {
             console.log('Redirecting multi-role user to dashboard');
             setHasRedirected(true);
@@ -125,7 +125,7 @@ const DashboardLayout: React.FC = () => {
               
               <div className="ml-10 flex items-center space-x-4">
                 {/* Only show dashboard link if user is not evaluator-only */}
-                {!isEvaluatorOnly() && (
+                {!isEvaluatorOnly() && !location.pathname.startsWith('/evaluator') && (
                   <Link
                     to="/dashboard"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
@@ -139,8 +139,8 @@ const DashboardLayout: React.FC = () => {
                   </Link>
                 )}
                 
-                {/* Only show planning link to planners who are not evaluator-only */}
-                {isPlanner(authState.userOrganizations) && !isEvaluatorOnly() && (
+                {/* Only show planning link to planners who are not evaluator-only and not on evaluator page */}
+                {isPlanner(authState.userOrganizations) && !isEvaluatorOnly() && !location.pathname.startsWith('/evaluator') && (
                   <Link
                     to="/planning"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
@@ -159,7 +159,7 @@ const DashboardLayout: React.FC = () => {
                   <Link
                     to="/evaluator"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
-                      isActive('/evaluator')
+                      location.pathname.startsWith('/evaluator')
                         ? 'text-white bg-green-800 shadow-inner'
                         : 'text-green-100 hover:text-white hover:bg-green-600 transition-colors'
                     }`}
@@ -169,8 +169,8 @@ const DashboardLayout: React.FC = () => {
                   </Link>
                 )}
 
-                {/* Admin Dashboard link - only for admins who are not evaluator-only */}
-                {isAdmin(authState.userOrganizations) && !isEvaluatorOnly() && (
+                {/* Admin Dashboard link - only for admins who are not evaluator-only and not on evaluator page */}
+                {isAdmin(authState.userOrganizations) && !isEvaluatorOnly() && !location.pathname.startsWith('/evaluator') && (
                   <Link
                     to="/admin"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${

@@ -169,63 +169,52 @@ const EvaluatorDashboard: React.FC = () => {
       if (userOrgIds.length === 0 || currentEvaluatorIds.length === 0) return { data: [] };
       
       try {
-        console.log('Fetching APPROVED/REJECTED plans for evaluator organizations:', userOrgIds);
-        console.log('Current evaluator IDs for reviewed:', currentEvaluatorIds);
+        console.log('Fetching reviewed plans for evaluator organizations:', userOrgIds);
+        console.log('Current evaluator OrganizationUser IDs:', currentEvaluatorIds);
         
         const response = await api.get('/plans/', {
           params: {
+            organization: userOrgIds.join(','),
             limit: 50
           }
         });
         
         const plans = response.data?.results || response.data || [];
-        console.log(`Found ${plans.length} total plans, filtering for reviewed tab`);
+        console.log(`Found ${plans.length} total plans from user organizations`);
         
-        // Filter plans: must be APPROVED/REJECTED, from user's organizations, and reviewed by current evaluator
+        // Filter plans: must be APPROVED/REJECTED AND reviewed by current evaluator
         const filteredPlans = plans.filter((plan: any) => {
           // 1. Must be APPROVED or REJECTED status
           if (plan.status !== 'APPROVED' && plan.status !== 'REJECTED') {
-            console.log(`Plan ${plan.id} status ${plan.status} not APPROVED/REJECTED, excluding`);
             return false;
           }
           
           // 2. Must be from user's organization
           if (!userOrgIds.includes(plan.organization)) {
-            console.log(`Plan ${plan.id} not from user org, excluding from reviewed`);
             return false;
           }
           
-          // 3. Must have been reviewed by current evaluator
+          // 3. Must have been reviewed by current evaluator (using OrganizationUser ID)
           if (plan.reviews && Array.isArray(plan.reviews)) {
             const hasReviewFromCurrentEvaluator = plan.reviews.some((review: any) => {
-              // review.evaluator is OrganizationUser ID
               const reviewerOrgUserId = review.evaluator;
               const isCurrentEvaluator = currentEvaluatorIds.includes(reviewerOrgUserId);
               
-              if (isCurrentEvaluator) {
-                console.log(`Plan ${plan.id} reviewed by current evaluator (OrgUser ID: ${reviewerOrgUserId})`);
-              }
+              console.log(`Plan ${plan.id} review check: reviewer=${reviewerOrgUserId}, currentEvaluators=${currentEvaluatorIds}, match=${isCurrentEvaluator}`);
               
               return isCurrentEvaluator;
-            }
-            );
+            });
             
-            if (!hasReviewFromCurrentEvaluator) {
-              console.log(`Plan ${plan.id} not reviewed by current evaluator, excluding from reviewed`);
-              return false;
-            }
+            return hasReviewFromCurrentEvaluator;
           } else {
-            console.log(`Plan ${plan.id} has no reviews, excluding from reviewed`);
+            // No reviews array means not reviewed by anyone
             return false;
           }
-          
-          console.log(`Plan ${plan.id} belongs in reviewed tab`);
-          return true;
         });
         
-        console.log(`Filtered to ${filteredPlans.length} APPROVED/REJECTED plans reviewed by current evaluator`);
+        console.log(`Filtered to ${filteredPlans.length} reviewed plans by current evaluator`);
         
-        // Get organization names efficiently
+        // Add organization names
         const orgNamesMap: Record<string, string> = {};
         const uniqueOrgIds = [...new Set(filteredPlans.map(p => p.organization))];
         
@@ -241,12 +230,17 @@ const EvaluatorDashboard: React.FC = () => {
           })
         );
         
+        // Add organization names and review details
         const plansWithNames = filteredPlans.map((plan: any) => ({
           ...plan,
-          organizationName: orgNamesMap[plan.organization] || 'Unknown Organization'
+          organizationName: orgNamesMap[plan.organization] || 'Unknown Organization',
+          // Add the evaluator's review details for display
+          currentEvaluatorReview: plan.reviews?.find((review: any) => 
+            currentEvaluatorIds.includes(review.evaluator)
+          )
         }));
         
-        console.log('Final APPROVED/REJECTED plans by current evaluator:', plansWithNames.length);
+        console.log('Final reviewed plans with names:', plansWithNames.length);
         return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching reviewed plans:', error);
@@ -725,13 +719,13 @@ const EvaluatorDashboard: React.FC = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           {plan.reviews && plan.reviews.length > 0 ? 
-                            formatDate(plan.reviews[plan.reviews.length - 1].reviewed_at) : 
+                            formatDate(plan.currentEvaluatorReview?.reviewed_at || plan.reviews[plan.reviews.length - 1].reviewed_at) : 
                             formatDate(plan.updated_at)}
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-500 max-w-xs">
-                          <div className="truncate" title={plan.reviews && plan.reviews.length > 0 ? plan.reviews[plan.reviews.length - 1].feedback : 'System review'}>
+                          <div className="truncate" title={plan.currentEvaluatorReview?.feedback || (plan.reviews && plan.reviews.length > 0 ? plan.reviews[plan.reviews.length - 1].feedback : 'System review')}>
                             {plan.reviews && plan.reviews.length > 0 ? 
-                              plan.reviews[plan.reviews.length - 1].feedback : 
+                              (plan.currentEvaluatorReview?.feedback || plan.reviews[plan.reviews.length - 1].feedback) : 
                               'System review'}
                           </div>
                         </td>
