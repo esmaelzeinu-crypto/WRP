@@ -67,21 +67,51 @@ const EvaluatorDashboard: React.FC = () => {
       
       try {
         console.log('Fetching SUBMITTED plans for evaluator organizations:', userOrgIds);
+        
+        // Get current evaluator user ID
+        const authData = await auth.getCurrentUser();
+        const currentUserId = authData.user?.id;
+        
+        if (!currentUserId) {
+          console.error('Current user ID not found');
+          return { data: [] };
+        }
+        
         const response = await api.get('/plans/', {
           params: {
             status: 'SUBMITTED',
-            limit: 100 // Increased limit but still reasonable
+            limit: 100
           }
         });
         
         const plans = response.data?.results || response.data || [];
         console.log(`Found ${plans.length} total SUBMITTED plans`);
         
-        // Filter plans by user's organizations on client side for better performance
-        const filteredPlans = plans.filter((plan: any) => 
-          userOrgIds.includes(plan.organization)
+        // CRITICAL: Filter plans that are:
+        // 1. From user's organizations
+        // 2. NOT already reviewed by this evaluator
+        const filteredPlans = plans.filter((plan: any) => {
+          // Must be from user's organization
+          if (!userOrgIds.includes(plan.organization)) {
+            return false;
+          }
+          
+          // Must NOT have been reviewed by current evaluator
+          if (plan.reviews && Array.isArray(plan.reviews)) {
+            const hasReviewFromCurrentEvaluator = plan.reviews.some((review: any) => 
+              review.evaluator && review.evaluator === currentUserId
+            );
+            
+            if (hasReviewFromCurrentEvaluator) {
+              console.log(`Plan ${plan.id} already reviewed by current evaluator, excluding from pending`);
+              return false;
+            }
+          }
+          
+          return true;
+        });
         );
-        console.log(`Filtered to ${filteredPlans.length} plans for user organizations`);
+        console.log(`Filtered to ${filteredPlans.length} truly pending plans (unreviewed by current evaluator)`);
         
         // Get organization names in parallel for better performance
         const orgNamesMap: Record<string, string> = {};
@@ -105,7 +135,7 @@ const EvaluatorDashboard: React.FC = () => {
           organizationName: orgNamesMap[plan.organization] || 'Unknown Organization'
         }));
         
-        console.log('Final pending plans with organization names:', plansWithNames.length);
+        console.log('Final truly pending plans with organization names:', plansWithNames.length);
         return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching pending reviews:', error);
@@ -113,7 +143,7 @@ const EvaluatorDashboard: React.FC = () => {
       }
     },
     enabled: isAuthChecked && userOrgIds.length > 0,
-    staleTime: 10000, // Cache for 10 seconds for faster updates
+    staleTime: 5000, // Cache for 5 seconds for faster updates
     refetchOnWindowFocus: false,
     refetchOnMount: true,
     retry: 1
@@ -127,21 +157,60 @@ const EvaluatorDashboard: React.FC = () => {
       
       try {
         console.log('Fetching APPROVED/REJECTED plans for evaluator organizations:', userOrgIds);
+        
+        // Get current evaluator user ID
+        const authData = await auth.getCurrentUser();
+        const currentUserId = authData.user?.id;
+        
+        if (!currentUserId) {
+          console.error('Current user ID not found for reviewed plans');
+          return { data: [] };
+        }
+        
         const response = await api.get('/plans/', {
           params: {
-            limit: 100
+            limit: 100,
+            status: 'APPROVED,REJECTED'
           }
         });
         
         const plans = response.data?.results || response.data || [];
         console.log(`Found ${plans.length} total plans for reviewed tab`);
         
-        // Filter by status and organization on client side
-        const filteredPlans = plans.filter((plan: any) => 
-          (plan.status === 'APPROVED' || plan.status === 'REJECTED') &&
-          userOrgIds.includes(plan.organization)
+        // CRITICAL: Filter plans that are:
+        // 1. APPROVED or REJECTED status
+        // 2. From user's organizations  
+        // 3. Reviewed by current evaluator
+        const filteredPlans = plans.filter((plan: any) => {
+          // Must be approved or rejected
+          if (plan.status !== 'APPROVED' && plan.status !== 'REJECTED') {
+            return false;
+          }
+          
+          // Must be from user's organization
+          if (!userOrgIds.includes(plan.organization)) {
+            return false;
+          }
+          
+          // Must have been reviewed by current evaluator
+          if (plan.reviews && Array.isArray(plan.reviews)) {
+            const hasReviewFromCurrentEvaluator = plan.reviews.some((review: any) => 
+              review.evaluator && review.evaluator === currentUserId
+            );
+            
+            if (!hasReviewFromCurrentEvaluator) {
+              console.log(`Plan ${plan.id} not reviewed by current evaluator, excluding from reviewed tab`);
+              return false;
+            }
+          } else {
+            // No reviews at all, shouldn't be in reviewed tab
+            return false;
+          }
+          
+          return true;
+        });
         );
-        console.log(`Filtered to ${filteredPlans.length} reviewed plans for user organizations`);
+        console.log(`Filtered to ${filteredPlans.length} plans actually reviewed by current evaluator`);
         
         // Get organization names efficiently
         const orgNamesMap: Record<string, string> = {};
@@ -164,7 +233,7 @@ const EvaluatorDashboard: React.FC = () => {
           organizationName: orgNamesMap[plan.organization] || 'Unknown Organization'
         }));
         
-        console.log('Final reviewed plans with organization names:', plansWithNames.length);
+        console.log('Final reviewed plans by current evaluator:', plansWithNames.length);
         return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching reviewed plans:', error);
@@ -172,7 +241,7 @@ const EvaluatorDashboard: React.FC = () => {
       }
     },
     enabled: isAuthChecked && userOrgIds.length > 0 && activeTab === 'reviewed',
-    staleTime: 30000, // Cache for 30 seconds
+    staleTime: 60000, // Cache for 60 seconds since reviewed plans change less frequently
     refetchOnWindowFocus: false,
     refetchOnMount: false, // Don't refetch on mount for reviewed plans
     retry: 1
