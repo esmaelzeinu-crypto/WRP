@@ -82,20 +82,23 @@ const DashboardLayout: React.FC = () => {
               </Link>
               
               <div className="ml-10 flex items-center space-x-4">
-                <Link
-                  to="/dashboard"
-                  className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
-                    isActive('/dashboard')
-                      ? 'text-white bg-green-800 shadow-inner'
-                      : 'text-green-100 hover:text-white hover:bg-green-600 transition-colors'
-                  }`}
-                >
-                  <LayoutDashboard className="h-5 w-5 mr-2" />
-                  {t('nav.dashboard')}
-                </Link>
+                {/* Only show dashboard link if not on evaluator page */}
+                {!isActive('/evaluator') && (
+                  <Link
+                    to="/dashboard"
+                    className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
+                      isActive('/dashboard')
+                        ? 'text-white bg-green-800 shadow-inner'
+                        : 'text-green-100 hover:text-white hover:bg-green-600 transition-colors'
+                    }`}
+                  >
+                    <LayoutDashboard className="h-5 w-5 mr-2" />
+                    {t('nav.dashboard')}
+                  </Link>
+                )}
                 
                 {/* Only show planning link to planners */}
-                {isPlanner(authState.userOrganizations) && (
+                {isPlanner(authState.userOrganizations) && !isActive('/evaluator') && (
                   <Link
                     to="/planning"
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${

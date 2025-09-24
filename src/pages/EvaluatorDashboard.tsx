@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Bell, Calendar, Eye, Building2, CheckCircle, XCircle, AlertCircle, Loader, RefreshCw, BarChart3, PieChart, DollarSign, LayoutGrid } from 'lucide-react';
@@ -7,16 +7,6 @@ import { plans, organizations, auth, api } from '../lib/api';
 import { format } from 'date-fns';
 import PlanReviewForm from '../components/PlanReviewForm';
 import { isEvaluator } from '../types/user';
-import Cookies from 'js-cookie';
-import { Bar, Doughnut } from 'react-chartjs-2';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title } from 'chart.js';
-
-// Register Chart.js components
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
-
-// Set some chart defaults
-ChartJS.defaults.color = '#4b5563';
-ChartJS.defaults.font.family = 'Inter, sans-serif';
 
 const EvaluatorDashboard: React.FC = () => {
   const { t } = useLanguage();
@@ -26,24 +16,11 @@ const EvaluatorDashboard: React.FC = () => {
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [organizationsMap, setOrganizationsMap] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<'pending' | 'reviewed'>('pending');
-  const [budgetData, setBudgetData] = useState<any>({
-    labels: [],
-    datasets: []
-  });
-  const [planStatusData, setPlanStatusData] = useState<any>({
-    labels: [],
-    datasets: []
-  });
-  const [orgSubmissionData, setOrgSubmissionData] = useState<any>({
-    labels: [],
-    datasets: []
-  });
   const [userOrgIds, setUserOrgIds] = useState<number[]>([]);
+  const [isAuthChecked, setIsAuthChecked] = useState(false);
 
-  // Check if user has evaluator permissions
+  // Check user permissions once on mount
   useEffect(() => {
     const checkPermissions = async () => {
       try {
@@ -62,7 +39,10 @@ const EvaluatorDashboard: React.FC = () => {
         
         if (!isEvaluator(authData.userOrganizations)) {
           setError('You do not have permission to access the evaluator dashboard');
+          return;
         }
+
+        setIsAuthChecked(true);
       } catch (error) {
         console.error('Failed to check permissions:', error);
         setError('Failed to verify your permissions');
@@ -72,198 +52,133 @@ const EvaluatorDashboard: React.FC = () => {
     checkPermissions();
   }, [navigate]);
 
-  // Fetch all organizations to map IDs to names
-  useEffect(() => {
-    const fetchOrganizations = async () => {
-      try {
-        const response = await organizations.getAll();
-        const orgMap: Record<string, string> = {};
-        
-        if (response && Array.isArray(response)) {
-          response.forEach((org: any) => {
-            if (org && org.id) {
-              orgMap[org.id] = org.name;
-            }
-          });
-        }
-        
-        setOrganizationsMap(orgMap);
-        console.log('Organizations map created:', orgMap);
-      } catch (error) {
-        console.error('Failed to fetch organizations:', error);
-      }
-    };
-    
-    fetchOrganizations();
-  }, []);
-
-  // Fetch pending plans for review (filtered by evaluator's organizations)
-  const { data: pendingPlans, isLoading, refetch } = useQuery({
-    queryKey: ['plans', 'pending-reviews', userOrgIds],
+  // Optimized organizations mapping with React Query
+  const { data: organizationsMap } = useQuery({
+    queryKey: ['organizations-map'],
     queryFn: async () => {
-      console.log('Fetching pending plans for evaluator organizations:', userOrgIds);
+      const response = await organizations.getAll();
+      const orgMap: Record<string, string> = {};
+      
+      if (response && Array.isArray(response)) {
+        response.forEach((org: any) => {
+          if (org && org.id) {
+            orgMap[org.id] = org.name;
+          }
+        });
+      }
+      
+      return orgMap;
+    },
+    staleTime: 300000, // Cache for 5 minutes
+    enabled: isAuthChecked && userOrgIds.length > 0
+  });
+
+  // Optimized pending plans query
+  const { data: pendingPlans, isLoading: loadingPending, refetch } = useQuery({
+    queryKey: ['evaluator-pending-plans', userOrgIds],
+    queryFn: async () => {
+      if (userOrgIds.length === 0) return { data: [] };
+      
       try {
-        await auth.getCurrentUser();
-        
-        // Get ONLY submitted plans for evaluator's organizations
         const response = await api.get('/plans/', {
           params: {
             status: 'SUBMITTED',
-            organization__in: userOrgIds.join(',')
+            organization__in: userOrgIds.join(','),
+            limit: 50 // Limit results for better performance
           }
         });
         
-        console.log('Pending plans response for evaluator:', response.data?.length || 0);
-        
         const plans = response.data?.results || response.data || [];
         
-        // Plans are already filtered by organization at API level
-        const filteredPlans = plans.filter(plan => 
-          plan.status === 'SUBMITTED' && 
-          userOrgIds.includes(Number(plan.organization))
-        );
+        // Map organization names efficiently
+        const plansWithNames = plans.map((plan: any) => ({
+          ...plan,
+          organizationName: organizationsMap?.[plan.organization] || 'Unknown Organization'
+        }));
         
-        console.log(`Filtered ${plans.length} total plans to ${filteredPlans.length} for evaluator orgs:`, userOrgIds);
-        
-        // Map organization names
-        if (Array.isArray(filteredPlans)) {
-          filteredPlans.forEach((plan: any) => {
-            if (plan.organization && organizationsMap[plan.organization]) {
-              plan.organizationName = organizationsMap[plan.organization];
-            }
-          });
-        }
-        
-        return { data: filteredPlans };
+        return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching pending reviews:', error);
         throw error;
       }
     },
-    enabled: userOrgIds.length > 0,
-    retry: 2,
-    refetchInterval: 30000,
-    refetchOnWindowFocus: true
+    enabled: isAuthChecked && userOrgIds.length > 0,
+    staleTime: 30000, // Cache for 30 seconds
+    refetchOnWindowFocus: false,
+    retry: 1
   });
 
-  // Fetch reviewed plans (approved/rejected) for evaluator's organizations
-  const { data: reviewedPlans, isLoading: isLoadingReviewed } = useQuery({
-    queryKey: ['plans', 'reviewed', userOrgIds],
+  // Optimized reviewed plans query - only fetch when tab is active
+  const { data: reviewedPlans, isLoading: loadingReviewed } = useQuery({
+    queryKey: ['evaluator-reviewed-plans', userOrgIds],
     queryFn: async () => {
-      console.log('Fetching reviewed plans for evaluator organizations:', userOrgIds);
+      if (userOrgIds.length === 0) return { data: [] };
+      
       try {
-        await auth.getCurrentUser();
-        
-        // Get ONLY approved and rejected plans for evaluator's organizations
         const response = await api.get('/plans/', {
           params: {
             status__in: 'APPROVED,REJECTED',
-            organization__in: userOrgIds.join(',')
+            organization__in: userOrgIds.join(','),
+            limit: 50 // Limit results for better performance
           }
         });
         
-        console.log('Reviewed plans response for evaluator:', response.data?.length || 0);
-        
         const plans = response.data?.results || response.data || [];
         
-        // Filter to ensure only approved/rejected plans from evaluator's organizations
-        const filteredPlans = plans.filter(plan => 
-          ['APPROVED', 'REJECTED'].includes(plan.status) &&
-          userOrgIds.includes(Number(plan.organization))
-        );
+        // Map organization names efficiently
+        const plansWithNames = plans.map((plan: any) => ({
+          ...plan,
+          organizationName: organizationsMap?.[plan.organization] || 'Unknown Organization'
+        }));
         
-        console.log(`Filtered ${plans.length} total plans to ${filteredPlans.length} reviewed plans for evaluator orgs:`, userOrgIds);
-        
-        // Map organization names
-        if (Array.isArray(filteredPlans)) {
-          filteredPlans.forEach((plan: any) => {
-            if (plan.organization && organizationsMap[plan.organization]) {
-              plan.organizationName = organizationsMap[plan.organization];
-            }
-          });
-        }
-        
-        return { data: filteredPlans };
+        return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching reviewed plans:', error);
         throw error;
       }
     },
-    enabled: userOrgIds.length > 0,
-    retry: 2
+    enabled: isAuthChecked && userOrgIds.length > 0 && activeTab === 'reviewed',
+    staleTime: 60000, // Cache for 1 minute
+    refetchOnWindowFocus: false,
+    retry: 1
   });
 
-  // Manual refresh function
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    setError(null);
-    try {
-      // Ensure CSRF token is fresh
-      await auth.getCurrentUser();
-      
-      await refetch();
-      
-      setSuccess('Plans refreshed successfully');
-      setTimeout(() => setSuccess(null), 3000);
-    } catch (err) {
-      setError('Failed to refresh plans');
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
+  // Memoized statistics to avoid recalculation
+  const statistics = useMemo(() => {
+    const pendingCount = pendingPlans?.data?.length || 0;
+    const reviewedCount = reviewedPlans?.data?.length || 0;
+    const approvedCount = reviewedPlans?.data?.filter((p: any) => p.status === 'APPROVED').length || 0;
+    const rejectedCount = reviewedPlans?.data?.filter((p: any) => p.status === 'REJECTED').length || 0;
 
-  // Review mutation (approve or reject)
+    return { pendingCount, reviewedCount, approvedCount, rejectedCount };
+  }, [pendingPlans?.data, reviewedPlans?.data]);
+
+  // Review mutation with optimized error handling
   const reviewMutation = useMutation({
     mutationFn: async (reviewData: { planId: string, status: 'APPROVED' | 'REJECTED', feedback: string }) => {
       try {
-        console.log(`Starting review submission for plan ${reviewData.planId} with status: ${reviewData.status}`);
-        
-        // Ensure fresh authentication and CSRF token
-        await auth.getCurrentUser();
-        
-        // Get fresh CSRF token
-        await api.get('/auth/csrf/');
-        const csrfToken = Cookies.get('csrftoken');
-        console.log(`Using CSRF token: ${csrfToken ? csrfToken.substring(0, 8) + '...' : 'none'}`);
-        
-        // Prepare the review data
         const reviewPayload = {
           status: reviewData.status,
           feedback: reviewData.feedback || ''
         };
         
-        console.log('Review payload:', reviewPayload);
-        
-        // Add timestamp for cache busting
         const timestamp = new Date().getTime();
         
-        // Submit the review using the planReviews API
         if (reviewData.status === 'APPROVED') {
-          console.log('Submitting approval...');
           const response = await api.post(`/plans/${reviewData.planId}/approve/?_=${timestamp}`, reviewPayload);
-          console.log('Approval response:', response.data);
           return response;
         } else {
-          console.log('Submitting rejection...');
           const response = await api.post(`/plans/${reviewData.planId}/reject/?_=${timestamp}`, reviewPayload);
-          console.log('Rejection response:', response.data);
           return response;
         }
       } catch (error) {
         console.error('Review submission failed:', error);
-        console.error('Error details:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status,
-          config: error.config
-        });
         throw error;
       }
     },
     onSuccess: () => {
-      console.log('Review submitted successfully, refreshing data...');
-      queryClient.invalidateQueries({ queryKey: ['plans', 'pending-reviews'] });
-      queryClient.invalidateQueries({ queryKey: ['plans', 'all'] });
+      queryClient.invalidateQueries({ queryKey: ['evaluator-pending-plans'] });
+      queryClient.invalidateQueries({ queryKey: ['evaluator-reviewed-plans'] });
       setShowReviewModal(false);
       setSelectedPlan(null);
       setSuccess('Plan review submitted successfully');
@@ -276,49 +191,30 @@ const EvaluatorDashboard: React.FC = () => {
     },
   });
 
-  const handleViewPlan = async (plan: any) => {
+  const handleViewPlan = (plan: any) => {
     if (!plan || !plan.id) {
       setError('Invalid plan data for viewing');
       return;
     }
     
-    console.log('Navigating to plan details:', plan.id);
     setError(null);
-    
-    try {
-      // Navigate to plan details
-      navigate(`/plans/${plan.id}`);
-    } catch (err) {
-      console.error('Failed to prefetch plan data:', err);
-      setError('Error accessing plan. Please try again.');
-    }
+    navigate(`/plans/${plan.id}`);
   };
 
-  const handleReviewPlan = async (plan: any) => {
+  const handleReviewPlan = (plan: any) => {
     if (!plan || !plan.id) {
       setError('Invalid plan data for review');
       return;
     }
     
-    try {
-      // Ensure CSRF token is fresh
-      await auth.getCurrentUser();
-      console.log('Opening review modal for plan:', plan.id);
-      setSelectedPlan(plan);
-      setShowReviewModal(true);
-    } catch (error) {
-      console.error('Authentication failed:', error);
-      setError('Failed to authenticate. Please try again.');
-    }
+    setSelectedPlan(plan);
+    setShowReviewModal(true);
   };
 
   const handleReviewSubmit = async (data: { status: 'APPROVED' | 'REJECTED'; feedback: string }) => {
     if (!selectedPlan) return;
     
     try {
-      console.log(`Submitting review for plan ${selectedPlan.id} with status: ${data.status}`);
-      console.log('Review data:', data);
-      
       await reviewMutation.mutateAsync({
         planId: selectedPlan.id,
         status: data.status,
@@ -327,7 +223,6 @@ const EvaluatorDashboard: React.FC = () => {
     } catch (error) {
       console.error('Failed to submit review:', error);
       
-      // Provide more specific error message
       let errorMessage = 'Failed to submit review';
       if (error.response?.status === 403) {
         errorMessage = 'Permission denied. You may not have evaluator permissions.';
@@ -344,46 +239,43 @@ const EvaluatorDashboard: React.FC = () => {
     }
   };
 
-  // Helper function to safely format dates
+  // Optimized date formatting
   const formatDate = (dateString: string | null | undefined) => {
     if (!dateString) return 'Not available';
     try {
       return format(new Date(dateString), 'MMM d, yyyy');
     } catch (e) {
-      console.error('Error formatting date:', e);
       return 'Invalid date';
     }
   };
 
-  // Helper function to get organization name from map or plan
+  // Optimized organization name getter
   const getOrganizationName = (plan: any) => {
-    if (plan.organizationName) {
-      return plan.organizationName;
-    }
-    
-    if (plan.organization_name) {
-      return plan.organization_name;
-    }
-    
-    // Try to get organization name from our map
-    if (plan.organization && organizationsMap[plan.organization]) {
-      return organizationsMap[plan.organization];
-    }
-    
-    return 'Unknown Organization';
+    return plan.organizationName || 
+           plan.organization_name || 
+           (organizationsMap?.[plan.organization]) || 
+           'Unknown Organization';
   };
 
-  // Calculate summary statistics from evaluator's data
-  const pendingCount = pendingPlans?.data?.length || 0;
-  const reviewedCount = reviewedPlans?.data?.length || 0;
-  const approvedCount = reviewedPlans?.data?.filter((p: any) => p.status === 'APPROVED').length || 0;
-  const rejectedCount = reviewedPlans?.data?.filter((p: any) => p.status === 'REJECTED').length || 0;
-
-  if (isLoading) {
+  // Show loading state while checking authentication
+  if (!isAuthChecked) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Loader className="h-6 w-6 animate-spin mr-2 text-green-600" />
-        <span className="text-lg">Loading pending plans...</span>
+        <span className="text-lg">Loading evaluator dashboard...</span>
+      </div>
+    );
+  }
+
+  // Show error state if no permission
+  if (error && error.includes('permission')) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="text-center p-8 bg-red-50 rounded-lg border border-red-200">
+          <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-red-800 mb-2">Access Denied</h3>
+          <p className="text-red-600">{error}</p>
+        </div>
       </div>
     );
   }
@@ -395,7 +287,7 @@ const EvaluatorDashboard: React.FC = () => {
         <p className="text-gray-600">Review and evaluate plans from your assigned organizations</p>
       </div>
 
-      {error && (
+      {error && !error.includes('permission') && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center text-red-700">
           <AlertCircle className="h-5 w-5 mr-2" />
           {error}
@@ -416,7 +308,13 @@ const EvaluatorDashboard: React.FC = () => {
             <h3 className="text-sm font-medium text-gray-500">Pending Reviews</h3>
             <Bell className="h-5 w-5 text-amber-500" />
           </div>
-          <p className="text-3xl font-semibold text-amber-600">{pendingCount}</p>
+          <p className="text-3xl font-semibold text-amber-600">
+            {loadingPending ? (
+              <Loader className="h-6 w-6 animate-spin" />
+            ) : (
+              statistics.pendingCount
+            )}
+          </p>
         </div>
 
         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
@@ -424,7 +322,13 @@ const EvaluatorDashboard: React.FC = () => {
             <h3 className="text-sm font-medium text-gray-500">Total Reviewed</h3>
             <LayoutGrid className="h-5 w-5 text-blue-500" />
           </div>
-          <p className="text-3xl font-semibold text-blue-600">{reviewedCount}</p>
+          <p className="text-3xl font-semibold text-blue-600">
+            {activeTab === 'reviewed' && loadingReviewed ? (
+              <Loader className="h-6 w-6 animate-spin" />
+            ) : (
+              statistics.reviewedCount
+            )}
+          </p>
         </div>
 
         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
@@ -432,7 +336,13 @@ const EvaluatorDashboard: React.FC = () => {
             <h3 className="text-sm font-medium text-gray-500">Approved Plans</h3>
             <CheckCircle className="h-5 w-5 text-green-500" />
           </div>
-          <p className="text-3xl font-semibold text-green-600">{approvedCount}</p>
+          <p className="text-3xl font-semibold text-green-600">
+            {activeTab === 'reviewed' && loadingReviewed ? (
+              <Loader className="h-6 w-6 animate-spin" />
+            ) : (
+              statistics.approvedCount
+            )}
+          </p>
         </div>
 
         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
@@ -440,16 +350,23 @@ const EvaluatorDashboard: React.FC = () => {
             <h3 className="text-sm font-medium text-gray-500">Rejected Plans</h3>
             <XCircle className="h-5 w-5 text-red-500" />
           </div>
-          <p className="text-3xl font-semibold text-red-600">{rejectedCount}</p>
+          <p className="text-3xl font-semibold text-red-600">
+            {activeTab === 'reviewed' && loadingReviewed ? (
+              <Loader className="h-6 w-6 animate-spin" />
+            ) : (
+              statistics.rejectedCount
+            )}
+          </p>
         </div>
       </div>
 
+      {/* Optimized Tab Navigation */}
       <div className="mb-6">
         <div className="border-b border-gray-200">
           <nav className="flex -mb-px">
             <button
               onClick={() => setActiveTab('pending')}
-              className={`mr-8 py-4 px-1 border-b-2 font-medium text-sm ${
+              className={`mr-8 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'pending'
                   ? 'border-green-600 text-green-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -458,16 +375,16 @@ const EvaluatorDashboard: React.FC = () => {
               <div className="flex items-center">
                 <Bell className="h-5 w-5 mr-2" />
                 Pending Reviews
-                {pendingCount > 0 && (
+                {statistics.pendingCount > 0 && (
                   <span className="ml-2 bg-red-100 text-red-800 px-2 py-0.5 rounded-full text-xs">
-                    {pendingCount}
+                    {statistics.pendingCount}
                   </span>
                 )}
               </div>
             </button>
             <button
               onClick={() => setActiveTab('reviewed')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'reviewed'
                   ? 'border-green-600 text-green-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -476,9 +393,9 @@ const EvaluatorDashboard: React.FC = () => {
               <div className="flex items-center">
                 <CheckCircle className="h-5 w-5 mr-2" />
                 Reviewed Plans
-                {reviewedCount > 0 && (
+                {statistics.reviewedCount > 0 && (
                   <span className="ml-2 bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full text-xs">
-                    {reviewedCount}
+                    {statistics.reviewedCount}
                   </span>
                 )}
               </div>
@@ -495,45 +412,33 @@ const EvaluatorDashboard: React.FC = () => {
               <div className="sm:flex-auto">
                 <h3 className="text-lg font-medium leading-6 text-gray-900">Pending Reviews</h3>
                 <p className="mt-1 text-sm text-gray-500">
-                  View all plans submitted for review and their current status.
+                  Plans submitted and waiting for your review.
                 </p>
               </div>
               <div className="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
-                <div className="flex items-center">
-                  <Bell className="h-6 w-6 text-gray-400 mr-2" />
-                  <span className="bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                    {pendingPlans?.data?.length || 0}
-                  </span>
-                </div>
+                <button
+                  onClick={() => refetch()}
+                  disabled={loadingPending}
+                  className="flex items-center px-4 py-2 text-sm text-blue-600 hover:text-blue-800 border border-blue-200 rounded-md disabled:opacity-50"
+                >
+                  {loadingPending ? <Loader className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+                  Refresh
+                </button>
               </div>
             </div>
 
-            <div className="mb-4 flex justify-end">
-              <button
-                onClick={handleRefresh}
-                disabled={isRefreshing}
-                className="flex items-center px-4 py-2 text-sm text-blue-600 hover:text-blue-800 border border-blue-200 rounded-md disabled:opacity-50"
-              >
-                {isRefreshing ? <Loader className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
-                Refresh Plans
-              </button>
-            </div>
-
-            {!pendingPlans?.data || pendingPlans.data.length === 0 ? (
-              <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200">
+            {loadingPending ? (
+              <div className="text-center py-12">
+                <Loader className="h-8 w-8 animate-spin mx-auto text-green-600 mb-4" />
+                <p className="text-gray-600">Loading pending plans...</p>
+              </div>
+            ) : !pendingPlans?.data || pendingPlans.data.length === 0 ? (
+              <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200 mt-6">
                 <Bell className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-gray-900 mb-1">No pending plans</h3>
                 <p className="text-gray-500 max-w-lg mx-auto">
                   There are no plans waiting for your review. Check back later or refresh to see if any new plans have been submitted.
                 </p>
-                <button
-                  onClick={handleRefresh}
-                  disabled={isRefreshing}
-                  className="mt-4 px-4 py-2 text-sm font-medium text-blue-600 hover:text-blue-800 border border-blue-300 rounded-md disabled:opacity-50"
-                >
-                  {isRefreshing ? <Loader className="h-4 w-4 mr-2 inline-block animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2 inline-block" />}
-                  Check Again
-                </button>
               </div>
             ) : (
               <div className="mt-6 overflow-hidden overflow-x-auto border border-gray-200 rounded-lg">
@@ -626,12 +531,17 @@ const EvaluatorDashboard: React.FC = () => {
               <div className="sm:flex-auto">
                 <h3 className="text-lg font-medium leading-6 text-gray-900">Reviewed Plans</h3>
                 <p className="mt-1 text-sm text-gray-500">
-                  View all plans you have reviewed and their current status.
+                  Plans you have already reviewed.
                 </p>
               </div>
             </div>
 
-            {!reviewedPlans?.data || reviewedPlans.data.length === 0 ? (
+            {loadingReviewed ? (
+              <div className="text-center py-12">
+                <Loader className="h-8 w-8 animate-spin mx-auto text-green-600 mb-4" />
+                <p className="text-gray-600">Loading reviewed plans...</p>
+              </div>
+            ) : !reviewedPlans?.data || reviewedPlans.data.length === 0 ? (
               <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200 mt-6">
                 <CheckCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-gray-900 mb-1">No reviewed plans</h3>
@@ -696,10 +606,12 @@ const EvaluatorDashboard: React.FC = () => {
                             formatDate(plan.reviews[plan.reviews.length - 1].reviewed_at) : 
                             formatDate(plan.updated_at)}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {plan.reviews && plan.reviews.length > 0 ? 
-                            plan.reviews[plan.reviews.length - 1].feedback : 
-                            'System review'}
+                        <td className="px-6 py-4 text-sm text-gray-500 max-w-xs">
+                          <div className="truncate" title={plan.reviews && plan.reviews.length > 0 ? plan.reviews[plan.reviews.length - 1].feedback : 'System review'}>
+                            {plan.reviews && plan.reviews.length > 0 ? 
+                              plan.reviews[plan.reviews.length - 1].feedback : 
+                              'System review'}
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                           <button
@@ -740,7 +652,6 @@ const EvaluatorDashboard: React.FC = () => {
           </div>
         </div>
       )}
-
     </div>
   );
 };
