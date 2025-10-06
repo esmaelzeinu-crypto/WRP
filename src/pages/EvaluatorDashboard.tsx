@@ -23,7 +23,6 @@ const EvaluatorDashboard: React.FC = () => {
   const [currentEvaluatorIds, setCurrentEvaluatorIds] = useState<number[]>([]);
   const [organizationsMap, setOrganizationsMap] = useState<Record<string, string>>({});
   const [isInitialLoad, setIsInitialLoad] = useState(true);
-  const [organizationsLoaded, setOrganizationsLoaded] = useState(false);
 
   // Check user permissions once on mount
   useEffect(() => {
@@ -33,6 +32,23 @@ const EvaluatorDashboard: React.FC = () => {
         if (!authData.isAuthenticated) {
           navigate('/login');
           return;
+        }
+        
+        // Pre-fetch organization names immediately for better performance
+        try {
+          const orgsResponse = await organizations.getAll();
+          const orgMap: Record<string, string> = {};
+          if (orgsResponse?.data && Array.isArray(orgsResponse.data)) {
+            orgsResponse.data.forEach((org: any) => {
+              if (org?.id) {
+                orgMap[String(org.id)] = org.name;
+              }
+            });
+            setOrganizationsMap(orgMap);
+            console.log('Pre-fetched organization names:', Object.keys(orgMap).length);
+          }
+        } catch (orgError) {
+          console.warn('Failed to pre-fetch organizations:', orgError);
         }
         
         // Get user's organization IDs for filtering
@@ -72,38 +88,6 @@ const EvaluatorDashboard: React.FC = () => {
     checkPermissions();
   }, [navigate]);
 
-  // Separate effect to load organizations after auth check
-  useEffect(() => {
-    const loadOrganizations = async () => {
-      if (!isAuthChecked || organizationsLoaded) return;
-      
-      try {
-        console.log('Loading organization names...');
-        const orgsResponse = await organizations.getAll();
-        const orgMap: Record<string, string> = {};
-        
-        if (orgsResponse?.data && Array.isArray(orgsResponse.data)) {
-          orgsResponse.data.forEach((org: any) => {
-            if (org?.id && org?.name) {
-              // Store with both string and number keys for flexibility
-              orgMap[String(org.id)] = org.name;
-              orgMap[org.id] = org.name;
-            }
-          });
-        }
-        
-        setOrganizationsMap(orgMap);
-        setOrganizationsLoaded(true);
-        console.log('Loaded organization names:', orgMap);
-      } catch (error) {
-        console.error('Failed to load organizations:', error);
-        setOrganizationsLoaded(true); // Still proceed even if failed
-      }
-    };
-    
-    loadOrganizations();
-  }, [isAuthChecked, organizationsLoaded]);
-
   // Optimized pending plans query - fetch SUBMITTED status plans immediately
   const { data: pendingPlans, isLoading: loadingPending, refetch } = useQuery({
     queryKey: ['evaluator-pending-plans', userOrgIds, currentEvaluatorIds, 'SUBMITTED'],
@@ -111,7 +95,9 @@ const EvaluatorDashboard: React.FC = () => {
       if (userOrgIds.length === 0 || currentEvaluatorIds.length === 0) return { data: [] };
       
       try {
-        console.log('Fetching SUBMITTED plans for evaluator organizations:', userOrgIds);
+        if (isInitialLoad) {
+          console.log('Initial load: Fetching SUBMITTED plans for evaluator organizations:', userOrgIds);
+        }
         
         const response = await api.get('/plans/', {
           params: {
@@ -122,7 +108,9 @@ const EvaluatorDashboard: React.FC = () => {
         });
         
         const plans = response.data?.results || response.data || [];
-        console.log(`Found ${plans.length} SUBMITTED plans from organizations`);
+        if (isInitialLoad) {
+          console.log(`Found ${plans.length} SUBMITTED plans from organizations`);
+        }
         
         // Client-side filter: must be SUBMITTED status and NOT reviewed by current evaluator
         const filteredPlans = plans.filter((plan: any) => {
@@ -147,15 +135,16 @@ const EvaluatorDashboard: React.FC = () => {
           return true;
         });
         
-        console.log(`Filtered to ${filteredPlans.length} truly pending SUBMITTED plans`);
+        if (isInitialLoad) {
+          console.log(`Filtered to ${filteredPlans.length} truly pending SUBMITTED plans`);
+        }
         
-        // Add organization names with better fallback
+        // Add organization names from pre-fetched map with fallback
         const plansWithNames = filteredPlans.map((plan: any) => ({
           ...plan,
-          organizationName: organizationsMap[String(plan.organization)] ||
-                           organizationsMap[plan.organization] ||
-                           plan.organization_name ||
-                           'Loading...'
+          organizationName: organizationsMap[String(plan.organization)] || 
+                           organizationsMap[plan.organization] || 
+                           `Organization ${plan.organization}`
         }));
         
         return { data: plansWithNames };
@@ -164,7 +153,7 @@ const EvaluatorDashboard: React.FC = () => {
         throw error;
       }
     },
-    enabled: isAuthChecked && userOrgIds.length > 0 && currentEvaluatorIds.length > 0 && organizationsLoaded,
+    enabled: isAuthChecked && userOrgIds.length > 0 && currentEvaluatorIds.length > 0,
     staleTime: 5000, // Cache for 5 seconds in production
     cacheTime: 30000, // Keep in cache for 30 seconds
     refetchOnWindowFocus: false,
@@ -182,7 +171,6 @@ const EvaluatorDashboard: React.FC = () => {
       
       try {
         console.log('Fetching reviewed plans for evaluator organizations:', userOrgIds);
-        console.log('Organizations map available:', Object.keys(organizationsMap).length);
         
         // Fetch all plans from user organizations with APPROVED or REJECTED status
         const response = await api.get('/plans/', {
@@ -229,23 +217,21 @@ const EvaluatorDashboard: React.FC = () => {
         const filteredPlans = Array.from(uniquePlansMap.values());
         console.log(`Filtered and deduplicated to ${filteredPlans.length} reviewed plans`);
         
-        // Add organization names with better mapping
+        // Add organization names from pre-fetched map
         const plansWithNames = filteredPlans.map((plan: any) => ({
           ...plan,
-          organizationName: organizationsMap[String(plan.organization)] ||
-                           organizationsMap[plan.organization] ||
-                           plan.organization_name ||
-                           'Loading...'
+          organizationName: organizationsMap[String(plan.organization)] || 
+                           organizationsMap[plan.organization] || 
+                           `Organization ${plan.organization}`
         }));
         
-        console.log('Sample plan with org name:', plansWithNames[0]?.organizationName);
         return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching reviewed plans:', error);
         throw error;
       }
     },
-    enabled: isAuthChecked && userOrgIds.length > 0 && currentEvaluatorIds.length > 0 && organizationsLoaded,
+    enabled: isAuthChecked && userOrgIds.length > 0 && currentEvaluatorIds.length > 0,
     staleTime: 60000, // Cache for 60 seconds since reviewed plans change less frequently
     cacheTime: 120000, // Keep in cache for 2 minutes
     refetchOnWindowFocus: false,
@@ -390,8 +376,8 @@ const EvaluatorDashboard: React.FC = () => {
 
   // Memoized organization name getter
   const getOrganizationName = (plan: any) => {
-    // Try multiple sources for organization name with better debugging
-    if (plan.organizationName && plan.organizationName !== 'Loading...') {
+    // Try multiple sources for organization name
+    if (plan.organizationName && plan.organizationName !== 'Unknown Organization') {
       return plan.organizationName;
     }
     
@@ -399,17 +385,13 @@ const EvaluatorDashboard: React.FC = () => {
       return plan.organization_name;
     }
     
-    // Direct lookup in organizationsMap with both key types
+    // Fallback to organizationsMap
     const orgId = String(plan.organization);
-    const orgName = organizationsMap[orgId] || organizationsMap[plan.organization];
-    
-    if (orgName) {
-      console.log(`Found organization name: ${orgName} for ID: ${orgId}`);
-      return orgName;
+    if (organizationsMap[orgId]) {
+      return organizationsMap[orgId];
     }
     
-    console.warn(`No organization name found for ID: ${orgId}. Available keys:`, Object.keys(organizationsMap).slice(0, 5));
-    return plan.organization_name || `Organization ${plan.organization}`;
+    return `Organization ${plan.organization}`;
   };
 
   // Show loading state while checking authentication
